@@ -1,0 +1,271 @@
+name: Review Issue Notifier
+
+# This workflow notifies when Codex posts review feedback
+# It formats issues for easy fixing with Claude Code
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+  pull_request_review_comment:
+    types: [created]
+
+  issue_comment:
+    types: [created]
+
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to check'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  notify-review-issues:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.review && github.event.review.state != 'APPROVED') ||
+      (github.event.review && github.event.review.body != '') ||
+      (github.event.comment && !contains(github.event.comment.body, '<!-- claude-review-'))
+
+    steps:
+      - name: Get PR number
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let prNumber = context.payload.pull_request?.number ||
+                          context.payload.inputs?.pr_number;
+
+            if (!prNumber && context.payload.issue) {
+              if (context.payload.issue.pull_request) {
+                prNumber = context.payload.issue.number;
+              } else {
+                console.log('Comment is on an issue, not a PR. Skipping.');
+                return;
+              }
+            }
+
+            if (!prNumber) {
+              console.log('Could not determine PR number');
+              return;
+            }
+
+            core.setOutput('number', prNumber);
+
+      - name: Collect and format review issues
+        if: steps.pr.outputs.number
+        id: issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const reviews = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const codexPattern = /codex-connector|chatgpt-codex/i;
+            const codexReviews = reviews.data
+              .filter(r => codexPattern.test(r.user.login))
+              .sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
+
+            if (codexReviews.length === 0) {
+              console.log('No Codex reviews found');
+              core.setOutput('has_issues', 'false');
+              return;
+            }
+
+            const latestCodexReview = codexReviews[0];
+            const latestReviewId = latestCodexReview.id;
+            console.log("Latest Codex review ID: " + latestReviewId);
+
+            const reviewComments = await github.rest.pulls.listReviewComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
+            const issues = [];
+
+            const bodyText = latestCodexReview.body || "";
+            const isTemplateOnly = bodyText.includes("Codex Review") &&
+                                   bodyText.includes("About Codex in GitHub") &&
+                                   !bodyText.includes("suggestion") &&
+                                   !bodyText.includes("issue") &&
+                                   !bodyText.includes("problem");
+
+            if (!isTemplateOnly && bodyText.trim() && latestCodexReview.state !== 'APPROVED') {
+              issues.push({
+                type: 'review',
+                body: bodyText,
+                user: latestCodexReview.user.login,
+                state: latestCodexReview.state,
+                url: latestCodexReview.html_url
+              });
+            }
+
+            for (const comment of reviewComments.data) {
+              if (comment.pull_request_review_id === latestReviewId) {
+                issues.push({
+                  type: 'inline',
+                  body: comment.body,
+                  path: comment.path,
+                  line: comment.line || comment.original_line,
+                  user: comment.user.login,
+                  url: comment.html_url
+                });
+              }
+            }
+
+            if (issues.length === 0) {
+              console.log('No actionable issues in latest Codex review');
+              core.setOutput('has_issues', 'false');
+              return;
+            }
+
+            let prompt = `## Code Review Issues for PR #${prNumber}\n\n`;
+            prompt += `**Branch:** \`${pr.data.head.ref}\`\n`;
+            prompt += `**Title:** ${pr.data.title}\n\n`;
+            prompt += `Please fix the following ${issues.length} issue(s):\n\n`;
+
+            issues.forEach((issue, i) => {
+              prompt += `### Issue ${i + 1}\n`;
+              if (issue.path) {
+                prompt += `**File:** \`${issue.path}\``;
+                if (issue.line) prompt += ` (line ${issue.line})`;
+                prompt += `\n`;
+              }
+              prompt += `**From:** ${issue.user}\n`;
+              prompt += `**Feedback:**\n`;
+              issue.body.split('\n').forEach(line => {
+                prompt += `> ${line}\n`;
+              });
+              prompt += `\n`;
+            });
+
+            prompt += `---\n`;
+            prompt += `After fixing, commit and push. Then trigger re-review.\n`;
+
+            core.setOutput('has_issues', 'true');
+            core.setOutput('count', issues.length);
+            core.setOutput('prompt', prompt);
+            core.setOutput('branch', pr.data.head.ref);
+
+      - name: Check for existing notification
+        if: steps.issues.outputs.has_issues == 'true'
+        id: existing
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const marker = "<!-- claude-review-notification -->";
+
+            let existingComment = null;
+            for await (const response of github.paginate.iterator(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                per_page: 100
+              }
+            )) {
+              const found = response.data.find(c => c.body && c.body.includes(marker));
+              if (found) {
+                existingComment = found;
+                break;
+              }
+            }
+
+            if (existingComment) {
+              core.setOutput("comment_id", existingComment.id);
+              core.setOutput("exists", "true");
+            } else {
+              core.setOutput("exists", "false");
+            }
+
+      - name: Post or update notification
+        if: steps.issues.outputs.has_issues == 'true'
+        uses: actions/github-script@v7
+        env:
+          PROMPT_CONTENT: ${{ steps.issues.outputs.prompt }}
+        with:
+          script: |
+            const prNumber = ${{ steps.pr.outputs.number }};
+            const issueCount = ${{ steps.issues.outputs.count }};
+            const prompt = process.env.PROMPT_CONTENT || "";
+
+            const marker = "<!-- claude-review-notification -->";
+
+            const lines = [
+              marker,
+              "## Review Issues Detected",
+              "",
+              "Found **" + issueCount + "** issue(s) from Codex review.",
+              "",
+              "### Quick Fix",
+              "",
+              "In your Claude Code session, run:",
+              "```bash",
+              "./scripts/fetch-review-issues.sh " + prNumber,
+              "```",
+              "",
+              'Then tell Claude: "Please fix the review issues above"',
+              "",
+              "<details>",
+              "<summary>Click to see formatted issues</summary>",
+              "",
+              "```",
+              prompt,
+              "```",
+              "</details>"
+            ];
+
+            const body = lines.join("\n");
+            const existingId = "${{ steps.existing.outputs.comment_id }}";
+
+            if (existingId && existingId !== "") {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: parseInt(existingId),
+                body: body
+              });
+              console.log("Updated notification");
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body: body
+              });
+              console.log("Created notification");
+            }
+
+      - name: Send webhook (optional)
+        if: steps.issues.outputs.has_issues == 'true' && vars.REVIEW_WEBHOOK_URL
+        run: |
+          curl -X POST "${{ vars.REVIEW_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "pr": ${{ steps.pr.outputs.number }},
+              "repo": "${{ github.repository }}",
+              "branch": "${{ steps.issues.outputs.branch }}",
+              "issue_count": ${{ steps.issues.outputs.count }},
+              "url": "https://github.com/${{ github.repository }}/pull/${{ steps.pr.outputs.number }}"
+            }' || echo "Webhook failed (non-fatal)"
