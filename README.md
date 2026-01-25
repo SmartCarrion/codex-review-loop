@@ -98,6 +98,18 @@ scripts/trigger-rereview.sh                 # Trigger @codex review
 - GitHub token with `repo` scope
 - `bash`, `curl`, `jq`
 
+## Made by Think On Labs
+
+Built by [Think On Labs](https://thinkonlabs.com), a boutique consultancy specializing in technical audience research, developer segmentation, and LLM-powered tooling.
+
+We build AI-assisted workflows for teams who'd rather ship code than babysit CI pipelines.
+
+## Disclaimer
+
+This tool is provided as-is, without warranty of any kind. Use at your own risk.
+
+This is an experimental integration between two AI systems. It may produce unexpected results, consume your API quotas, or make changes you didn't anticipate. Always review AI-generated code before merging to production. You are responsible for any code committed to your repositories.
+
 ## License
 
 MIT
