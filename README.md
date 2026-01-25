@@ -1,10 +1,22 @@
 # Codex Review Loop
 
-Automate AI code reviews: Codex reviews your PR, Claude Code fixes issues, repeat until pass.
+A low-effort AI code review loop: Claude Code writes and fixes code, Codex reviews it, repeat until pass.
+
+## What Is This?
+
+This tool connects two AI systems in a review loop:
+- **Claude Code** writes code and fixes issues
+- **Codex** reviews PRs and provides feedback
+
+You kick it off, grab a coffee, and come back to a reviewed PR. It's the Ralph Wiggum of CI/CD—simple, automated, gets the job done.
 
 ## Setup
 
-### 1. Copy to your repo
+### 1. Enable Codex on your repo
+
+Go to [chatgpt.com/codex](https://chatgpt.com/codex) and connect your GitHub repository. Codex will automatically review PRs when they're opened or when you comment `@codex review`.
+
+### 2. Copy to your repo
 
 ```bash
 # Copy scripts
@@ -17,7 +29,7 @@ cp -r codex-review-loop/.claude your-project/
 cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/workflows/
 ```
 
-### 2. Set your GitHub token
+### 3. Set your GitHub token
 
 ```bash
 export GITHUB_TOKEN=ghp_xxxxx
@@ -33,7 +45,7 @@ In Claude Code:
 /codex-review-loop 42
 ```
 
-Or just tell Claude:
+Or just say:
 
 > "Run the codex review loop for PR #42"
 
@@ -42,6 +54,14 @@ Claude will:
 2. Fix them
 3. Push and trigger re-review
 4. Repeat until Codex passes the PR
+
+## Warnings
+
+**Loop limit:** The skill stops after 10 iterations and asks for input to avoid infinite loops. Some PRs may need human judgment to break out of fix-review cycles.
+
+**Codex quota:** Each review cycle uses your Codex review allowance. A PR that takes 5 iterations = 5 reviews. Monitor your usage at [chatgpt.com/codex](https://chatgpt.com/codex).
+
+**Not magic:** This catches straightforward issues. Complex architectural feedback may need human review. Use it to handle the routine stuff so you can focus on the interesting problems.
 
 ## What You'll See
 
@@ -74,8 +94,8 @@ scripts/trigger-rereview.sh                 # Trigger @codex review
 ## Requirements
 
 - [Claude Code](https://claude.ai/code)
-- GitHub token with `repo` scope
 - [Codex](https://chatgpt.com/codex) enabled on your repository
+- GitHub token with `repo` scope
 - `bash`, `curl`, `jq`
 
 ## License

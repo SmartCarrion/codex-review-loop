@@ -8,11 +8,17 @@ allowed-tools: Read, Bash, Edit, Write
 
 # Codex Review Loop
 
-Run the code review loop for PR $ARGUMENTS:
+Run the code review loop for PR $ARGUMENTS.
+
+**Important:** Stop after 10 iterations and ask the user for input to avoid infinite loops or burning through Codex quota.
+
+## Loop (max 10 iterations)
 
 1. **Check review status**: Run `./scripts/fetch-review-issues.sh $ARGUMENTS`
 
-2. **If issues found**:
+2. **If "CODEX PASSED THE PR!"**: Stop - the PR is ready to merge
+
+3. **If issues found**:
    - Fix each issue
    - Commit changes
    - Push to origin
@@ -20,7 +26,7 @@ Run the code review loop for PR $ARGUMENTS:
    - Wait ~2 minutes for Codex to review
    - Go back to step 1
 
-3. **If "CODEX PASSED THE PR!"**: Stop - the PR is ready to merge
+4. **If 10 iterations reached**: Stop and ask user whether to continue, merge anyway, or abandon
 
 ## Requirements
 
