@@ -4,56 +4,44 @@ Automate AI code reviews: Codex reviews your PR, Claude Code fixes issues, repea
 
 ## Setup
 
-### 1. Copy files to your repo
+### 1. Copy to your repo
 
 ```bash
 # Copy scripts
 cp -r codex-review-loop/scripts your-project/
 
-# Copy GitHub Action (optional - posts notifications on PRs)
+# Copy the skill (enables /codex-review-loop command)
+cp -r codex-review-loop/.claude your-project/
+
+# Optional: GitHub Action for PR notifications
 cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/workflows/
 ```
 
-### 2. Add to your CLAUDE.md
-
-Add this skill to your project's `CLAUDE.md` so Claude Code knows how to run the review loop:
-
-```markdown
-## Code Review Loop
-
-When asked to "run review loop" or "check code review", use this workflow:
-
-1. Run `./scripts/fetch-review-issues.sh <PR_NUMBER>` to check review status
-2. If issues are found, fix them and commit
-3. Push changes and run `./scripts/trigger-rereview.sh <PR_NUMBER>`
-4. Wait ~2 minutes for Codex to review, then repeat from step 1
-5. Stop when you see "CODEX PASSED THE PR!"
-
-Requirements:
-- GITHUB_TOKEN environment variable must be set
-- Codex must be enabled on the repository
-```
-
-### 3. Set your GitHub token
+### 2. Set your GitHub token
 
 ```bash
 export GITHUB_TOKEN=ghp_xxxxx
 ```
 
-The repo is auto-detected from your git remote. No other config needed.
+The repo is auto-detected from your git remote.
 
 ## Usage
 
-In Claude Code, just say:
+In Claude Code:
 
-> "Run the review loop for PR #42"
-
-Or manually:
-
-```bash
-./scripts/fetch-review-issues.sh 42   # Check status
-./scripts/trigger-rereview.sh 42      # Trigger re-review after pushing fixes
 ```
+/codex-review-loop 42
+```
+
+Or just tell Claude:
+
+> "Run the codex review loop for PR #42"
+
+Claude will:
+1. Fetch review issues from Codex
+2. Fix them
+3. Push and trigger re-review
+4. Repeat until Codex passes the PR
 
 ## What You'll See
 
@@ -74,11 +62,21 @@ CODEX PASSED THE PR!
 The PR is ready to merge!
 ```
 
+## Files
+
+```
+.claude/skills/codex-review-loop/SKILL.md  # Claude Code skill
+scripts/fetch-review-issues.sh              # Fetch review status
+scripts/trigger-rereview.sh                 # Trigger @codex review
+.github/workflows/review-notifier.yml       # Optional PR notifications
+```
+
 ## Requirements
 
-- `bash`, `curl`, `jq`
+- [Claude Code](https://claude.ai/code)
 - GitHub token with `repo` scope
 - [Codex](https://chatgpt.com/codex) enabled on your repository
+- `bash`, `curl`, `jq`
 
 ## License
 
