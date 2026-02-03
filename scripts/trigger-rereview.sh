@@ -15,8 +15,16 @@ set -euo pipefail
 
 PR_NUMBER="${1:-}"
 
+if [[ -z "${REPO:-}" ]]; then
+    # Try to detect from git remote early so it's available for helpful messages
+    REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/ ]*\).*#\1#p' | sed 's/\.git$//' || echo "")
+fi
+
 if [[ -z "$PR_NUMBER" ]]; then
     echo "Usage: $0 <PR_NUMBER>"
+    if [[ -n "${REPO:-}" ]]; then
+        echo "Find your PR number at: https://github.com/$REPO/pulls"
+    fi
     exit 1
 fi
 
@@ -27,20 +35,16 @@ if [[ -z "${GITHUB_TOKEN:-}" ]]; then
 fi
 
 if [[ -z "${REPO:-}" ]]; then
-    # Try to detect from git remote
-    REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/ ]*\).*#\1#p' | sed 's/\.git$//' || echo "")
-    if [[ -z "$REPO" ]]; then
-        echo "Error: REPO required"
-        echo "Set with: export REPO=owner/repo-name"
-        exit 1
-    fi
-    echo "Detected repo: $REPO"
+    echo "Error: REPO required"
+    echo "Set with: export REPO=owner/repo-name"
+    exit 1
 fi
+echo "Detected repo: $REPO"
 
 echo "Triggering re-review for PR #$PR_NUMBER..."
 
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
-    -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "Authorization: token $GITHUB_TOKEN" \
     -H "Accept: application/vnd.github.v3+json" \
     -d '{"body": "@codex review\n\n*Re-review requested after fixes*"}' \
     "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments")

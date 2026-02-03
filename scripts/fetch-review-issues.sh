@@ -15,6 +15,11 @@ set -euo pipefail
 
 PR_NUMBER="${1:-}"
 
+if [[ -z "${REPO:-}" ]]; then
+    # Try to detect from git remote early so it's available for helpful messages
+    REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/ ]*\).*#\1#p' | sed 's/\.git$//' || echo "")
+fi
+
 if [[ -z "$PR_NUMBER" ]]; then
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     if [[ -n "$CURRENT_BRANCH" && "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
@@ -39,16 +44,12 @@ if [[ -z "${GITHUB_TOKEN:-}" ]]; then
 fi
 
 if [[ -z "${REPO:-}" ]]; then
-    # Try to detect from git remote
-    REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/ ]*\).*#\1#p' | sed 's/\.git$//' || echo "")
-    if [[ -z "$REPO" ]]; then
-        echo "Error: REPO environment variable required"
-        echo ""
-        echo "Set it with: export REPO=owner/repo-name"
-        exit 1
-    fi
-    echo "Detected repo: $REPO"
+    echo "Error: REPO environment variable required"
+    echo ""
+    echo "Set it with: export REPO=owner/repo-name"
+    exit 1
 fi
+echo "Detected repo: $REPO"
 
 API_BASE="https://api.github.com"
 
