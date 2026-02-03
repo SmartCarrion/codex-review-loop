@@ -31,9 +31,12 @@ cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/
 
 ### 3. Set your GitHub token
 
-```bash
-export GITHUB_TOKEN=ghp_xxxxx
-```
+Create a [classic Personal Access Token](https://github.com/settings/tokens/new) with the **`repo`** and **`workflow`** scopes.
+
+Add it to your Claude Code cloud environment:
+
+1. Open the Claude app → **Settings** → **Claude Code** → **Environment Variables**
+2. Add `GITHUB_TOKEN` with your token value
 
 The repo is auto-detected from your git remote.
 
@@ -95,7 +98,7 @@ scripts/trigger-rereview.sh                 # Trigger @codex review
 
 - [Claude Code](https://claude.ai/code)
 - [Codex](https://chatgpt.com/codex) enabled on your repository
-- GitHub token with `repo` scope
+- GitHub classic token with `repo` and `workflow` scopes
 - `bash`, `curl`, `jq`
 
 ## Made by Think On Labs

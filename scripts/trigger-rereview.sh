@@ -31,8 +31,13 @@ if [[ -z "$PR_NUMBER" ]]; then
 fi
 
 if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    echo "Error: GITHUB_TOKEN required"
-    echo "Set with: export GITHUB_TOKEN=ghp_xxxxx"
+    echo "Error: GITHUB_TOKEN not set"
+    echo ""
+    echo "Add GITHUB_TOKEN to your Claude Code cloud environment:"
+    echo "  Claude app → Settings → Claude Code → Environment Variables"
+    echo ""
+    echo "Create a classic token at: https://github.com/settings/tokens/new"
+    echo "Required scopes: repo, workflow"
     exit 1
 fi
 
