@@ -40,7 +40,7 @@ fi
 
 if [[ -z "${REPO:-}" ]]; then
     # Try to detect from git remote
-    REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/.]*\).*#\1#p' || echo "")
+    REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/ ]*\).*#\1#p' | sed 's/\.git$//' || echo "")
     if [[ -z "$REPO" ]]; then
         echo "Error: REPO environment variable required"
         echo ""
