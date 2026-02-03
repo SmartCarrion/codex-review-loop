@@ -15,9 +15,11 @@ set -euo pipefail
 
 PR_NUMBER="${1:-}"
 
+REPO_DETECTED=false
 if [[ -z "${REPO:-}" ]]; then
     # Try to detect from git remote early so it's available for helpful messages
     REPO=$(git remote get-url origin 2>/dev/null | sed -n 's#.*github.com[:/]\([^/]*/[^/ ]*\).*#\1#p' | sed 's/\.git$//' || echo "")
+    [[ -n "$REPO" ]] && REPO_DETECTED=true
 fi
 
 if [[ -z "$PR_NUMBER" ]]; then
@@ -39,7 +41,9 @@ if [[ -z "${REPO:-}" ]]; then
     echo "Set with: export REPO=owner/repo-name"
     exit 1
 fi
-echo "Detected repo: $REPO"
+if [[ "$REPO_DETECTED" == true ]]; then
+    echo "Detected repo: $REPO"
+fi
 
 echo "Triggering re-review for PR #$PR_NUMBER..."
 
