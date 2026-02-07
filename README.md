@@ -19,20 +19,23 @@ Go to [chatgpt.com/codex](https://chatgpt.com/codex) and connect your GitHub rep
 ### 2. Copy to your repo
 
 ```bash
-# Copy scripts and gitattributes
+# Copy scripts
 cp -r codex-review-loop/scripts your-project/
-cp codex-review-loop/.gitattributes your-project/
 
 # Copy the skill (enables /codex-review-loop command)
 cp -r codex-review-loop/.claude your-project/
+
+# Hide tool files from PR diffs (optional but recommended)
+cp codex-review-loop/gitattributes.template your-project/.gitattributes
 
 # Optional: GitHub Action for PR notifications
 cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/workflows/
 ```
 
-> **Note:** The `.gitattributes` file marks tool files as `linguist-generated` so they're
-> collapsed by default in GitHub PR diffs. The files are still committed and functional —
-> they just won't clutter code reviews. Reviewers can expand them if needed.
+> **Note:** The `gitattributes.template` is installed as `.gitattributes` in your project. It marks
+> tool files as `linguist-generated` so they're collapsed by default in GitHub PR diffs. The files
+> are still committed and functional — they just won't clutter code reviews. Reviewers can expand
+> them if needed. It's kept as a template in this repo so it doesn't hide diffs here.
 
 ### 3. Authenticate with GitHub
 
@@ -110,7 +113,7 @@ The PR is ready to merge!
 scripts/fetch-review-issues.sh              # Fetch review status
 scripts/trigger-rereview.sh                 # Trigger @codex review
 .github/workflows/review-notifier.yml       # Optional PR notifications
-.gitattributes                              # Hides tool files from PR diffs
+gitattributes.template                      # .gitattributes for target repos
 ```
 
 ## Requirements
