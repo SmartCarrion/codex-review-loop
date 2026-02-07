@@ -69,11 +69,17 @@ if [[ "$REPO_DETECTED" == true ]]; then
 fi
 
 # Unified API caller — works with either GITHUB_TOKEN or gh CLI
-# Both paths exit 0 and return the response body (including error JSON).
-# curl -s already exits 0 on HTTP errors; || true makes gh api match.
+# Fails fast on gh errors; curl -s always exits 0 on HTTP errors so the
+# downstream jq parsing handles error JSON (e.g. STATE becomes "null").
 gh_api() {
     if [[ "$AUTH_METHOD" == "gh" ]]; then
-        gh api -H "Accept: application/vnd.github.v3+json" "$1" 2>/dev/null || true
+        local output
+        if ! output=$(gh api -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
+            echo "Error: GitHub API request failed for $1" >&2
+            echo "$output" >&2
+            exit 1
+        fi
+        echo "$output"
     else
         curl -s -H "Authorization: token $GITHUB_TOKEN" \
              -H "Accept: application/vnd.github.v3+json" \
