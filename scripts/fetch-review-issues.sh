@@ -86,9 +86,13 @@ gh_api() {
 # curl path uses per_page=100 (single request, covers most PRs).
 gh_api_list() {
     if [[ "$AUTH_METHOD" == "gh" ]]; then
-        gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>/dev/null \
-            | jq -s 'add // []' \
-            || echo '[]'
+        local output
+        if ! output=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
+            echo "Error: GitHub API request failed for $1" >&2
+            echo "$output" >&2
+            exit 1
+        fi
+        echo "$output" | jq -s 'add // []'
     else
         curl -s -H "Authorization: token $GITHUB_TOKEN" \
              -H "Accept: application/vnd.github.v3+json" \
