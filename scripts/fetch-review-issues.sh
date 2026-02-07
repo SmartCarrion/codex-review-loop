@@ -7,8 +7,8 @@
 #   ./scripts/fetch-review-issues.sh <PR_NUMBER>
 #
 # Environment:
-#   GITHUB_TOKEN - Required. GitHub PAT with repo scope
-#   REPO         - Required. Repository in owner/repo format
+#   GITHUB_TOKEN - GitHub PAT with repo scope (or use gh CLI auth)
+#   REPO         - Repository in owner/repo format (auto-detected from git remote)
 #
 
 set -euo pipefail
@@ -37,14 +37,24 @@ if [[ -z "$PR_NUMBER" ]]; then
     exit 1
 fi
 
-if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    echo "Error: GITHUB_TOKEN not set"
+# Determine auth method: GITHUB_TOKEN (PAT) or gh CLI
+AUTH_METHOD=""
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    AUTH_METHOD="token"
+elif command -v gh &>/dev/null && gh auth status &>/dev/null; then
+    AUTH_METHOD="gh"
+else
+    echo "Error: No GitHub authentication found"
     echo ""
-    echo "Add GITHUB_TOKEN to your Claude Code cloud environment:"
-    echo "  Claude app → Settings → Claude Code → Environment Variables"
+    echo "Option 1 — GitHub CLI (supports SSH, browser login, etc.):"
+    echo "  Install: https://cli.github.com"
+    echo "  Then run: gh auth login"
     echo ""
-    echo "Create a classic token at: https://github.com/settings/tokens/new"
-    echo "Required scopes: repo, workflow"
+    echo "Option 2 — Personal Access Token:"
+    echo "  Create a classic token at: https://github.com/settings/tokens/new"
+    echo "  Required scopes: repo, workflow"
+    echo "  Then: export GITHUB_TOKEN=your_token"
+    echo "  Or add it in Claude app → Settings → Claude Code → Environment Variables"
     exit 1
 fi
 
@@ -58,12 +68,15 @@ if [[ "$REPO_DETECTED" == true ]]; then
     echo "Detected repo: $REPO"
 fi
 
-API_BASE="https://api.github.com"
-
+# Unified API caller — works with either GITHUB_TOKEN or gh CLI
 gh_api() {
-    curl -s -H "Authorization: token $GITHUB_TOKEN" \
-         -H "Accept: application/vnd.github.v3+json" \
-         "$API_BASE$1"
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        gh api -H "Accept: application/vnd.github.v3+json" "$1"
+    else
+        curl -s -H "Authorization: token $GITHUB_TOKEN" \
+             -H "Accept: application/vnd.github.v3+json" \
+             "https://api.github.com$1"
+    fi
 }
 
 echo "Fetching review status for PR #$PR_NUMBER..."

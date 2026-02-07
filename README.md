@@ -19,8 +19,9 @@ Go to [chatgpt.com/codex](https://chatgpt.com/codex) and connect your GitHub rep
 ### 2. Copy to your repo
 
 ```bash
-# Copy scripts
+# Copy scripts and gitattributes
 cp -r codex-review-loop/scripts your-project/
+cp codex-review-loop/.gitattributes your-project/
 
 # Copy the skill (enables /codex-review-loop command)
 cp -r codex-review-loop/.claude your-project/
@@ -29,7 +30,24 @@ cp -r codex-review-loop/.claude your-project/
 cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/workflows/
 ```
 
-### 3. Set your GitHub token
+> **Note:** The `.gitattributes` file marks tool files as `linguist-generated` so they're
+> collapsed by default in GitHub PR diffs. The files are still committed and functional —
+> they just won't clutter code reviews. Reviewers can expand them if needed.
+
+### 3. Authenticate with GitHub
+
+The scripts need GitHub API access. Two options:
+
+**Option A — GitHub CLI (recommended, supports SSH):**
+
+```bash
+# Install: https://cli.github.com
+gh auth login
+```
+
+This works with SSH keys, browser OAuth, or any method `gh` supports. No token management needed.
+
+**Option B — Personal Access Token:**
 
 Create a [classic Personal Access Token](https://github.com/settings/tokens/new) with the **`repo`** and **`workflow`** scopes.
 
@@ -38,7 +56,7 @@ Add it to your Claude Code cloud environment:
 1. Open the Claude app → **Settings** → **Claude Code** → **Environment Variables**
 2. Add `GITHUB_TOKEN` with your token value
 
-The repo is auto-detected from your git remote.
+If both are available, `GITHUB_TOKEN` takes priority. The repo is auto-detected from your git remote.
 
 ## Usage
 
@@ -92,14 +110,15 @@ The PR is ready to merge!
 scripts/fetch-review-issues.sh              # Fetch review status
 scripts/trigger-rereview.sh                 # Trigger @codex review
 .github/workflows/review-notifier.yml       # Optional PR notifications
+.gitattributes                              # Hides tool files from PR diffs
 ```
 
 ## Requirements
 
 - [Claude Code](https://claude.ai/code)
 - [Codex](https://chatgpt.com/codex) enabled on your repository
-- GitHub classic token with `repo` and `workflow` scopes
-- `bash`, `curl`, `jq`
+- GitHub auth: [GitHub CLI](https://cli.github.com) (`gh auth login`) **or** a classic token with `repo` + `workflow` scopes
+- `bash`, `curl`, `jq` (curl/jq only needed when using token auth; `gh` CLI handles its own HTTP)
 
 ## Made by Think On Labs
 
