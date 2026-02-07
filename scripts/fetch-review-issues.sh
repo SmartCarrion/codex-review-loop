@@ -202,12 +202,24 @@ fi
 TOTAL=$((REVIEW_ISSUES + INLINE_ISSUES))
 
 if [[ "$TOTAL" -eq 0 ]]; then
-    echo "No review issues found on PR #$PR_NUMBER"
-    echo ""
-    echo "The PR may be:"
-    echo "  - Already approved"
-    echo "  - Awaiting initial review"
-    echo "  - Having all issues resolved"
+    if [[ "${PASS_BY_STATE:-false}" == "true" || "${PASS_BY_BODY:-false}" == "true" ]]; then
+        echo "==========================================="
+        echo "CODEX HAS NO ISSUES"
+        echo "==========================================="
+        echo ""
+        echo "Codex approved or found no problems, but other reviewers"
+        echo "have pending feedback on this PR."
+        echo ""
+        echo "Check the PR for non-Codex review comments:"
+        echo "https://github.com/$REPO/pull/$PR_NUMBER"
+    else
+        echo "No review issues found on PR #$PR_NUMBER"
+        echo ""
+        echo "The PR may be:"
+        echo "  - Already approved"
+        echo "  - Awaiting initial review"
+        echo "  - Having all issues resolved"
+    fi
     exit 0
 fi
 
