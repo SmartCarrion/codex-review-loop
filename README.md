@@ -25,11 +25,33 @@ cp -r codex-review-loop/scripts your-project/
 # Copy the skill (enables /codex-review-loop command)
 cp -r codex-review-loop/.claude your-project/
 
+# Hide tool files from PR diffs (optional but recommended)
+# Uses >> to append, so existing .gitattributes rules are preserved
+cat codex-review-loop/gitattributes.template >> your-project/.gitattributes
+
 # Optional: GitHub Action for PR notifications
 cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/workflows/
 ```
 
-### 3. Set your GitHub token
+> **Note:** The `gitattributes.template` is installed as `.gitattributes` in your project. It marks
+> tool files as `linguist-generated` so they're collapsed by default in GitHub PR diffs. The files
+> are still committed and functional — they just won't clutter code reviews. Reviewers can expand
+> them if needed. It's kept as a template in this repo so it doesn't hide diffs here.
+
+### 3. Authenticate with GitHub
+
+The scripts need GitHub API access. Two options:
+
+**Option A — GitHub CLI (recommended, supports SSH):**
+
+```bash
+# Install: https://cli.github.com
+gh auth login
+```
+
+This works with SSH keys, browser OAuth, or any method `gh` supports. No token management needed.
+
+**Option B — Personal Access Token:**
 
 Create a [classic Personal Access Token](https://github.com/settings/tokens/new) with the **`repo`** and **`workflow`** scopes.
 
@@ -38,7 +60,7 @@ Add it to your Claude Code cloud environment:
 1. Open the Claude app → **Settings** → **Claude Code** → **Environment Variables**
 2. Add `GITHUB_TOKEN` with your token value
 
-The repo is auto-detected from your git remote.
+If both are available, `GITHUB_TOKEN` takes priority. The repo is auto-detected from your git remote.
 
 ## Usage
 
@@ -92,14 +114,15 @@ The PR is ready to merge!
 scripts/fetch-review-issues.sh              # Fetch review status
 scripts/trigger-rereview.sh                 # Trigger @codex review
 .github/workflows/review-notifier.yml       # Optional PR notifications
+gitattributes.template                      # .gitattributes for target repos
 ```
 
 ## Requirements
 
 - [Claude Code](https://claude.ai/code)
 - [Codex](https://chatgpt.com/codex) enabled on your repository
-- GitHub classic token with `repo` and `workflow` scopes
-- `bash`, `curl`, `jq`
+- GitHub auth: [GitHub CLI](https://cli.github.com) (`gh auth login`) **or** a classic token with `repo` + `workflow` scopes
+- `bash`, `jq`, and `curl` (curl only needed for token auth; `jq` is required for both auth methods)
 
 ## Made by Think On Labs
 

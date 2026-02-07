@@ -7,8 +7,8 @@
 #   ./scripts/fetch-review-issues.sh <PR_NUMBER>
 #
 # Environment:
-#   GITHUB_TOKEN - Required. GitHub PAT with repo scope
-#   REPO         - Required. Repository in owner/repo format
+#   GITHUB_TOKEN - GitHub PAT with repo scope (or use gh CLI auth)
+#   REPO         - Repository in owner/repo format (auto-detected from git remote)
 #
 
 set -euo pipefail
@@ -37,14 +37,24 @@ if [[ -z "$PR_NUMBER" ]]; then
     exit 1
 fi
 
-if [[ -z "${GITHUB_TOKEN:-}" ]]; then
-    echo "Error: GITHUB_TOKEN not set"
+# Determine auth method: GITHUB_TOKEN (PAT) or gh CLI
+AUTH_METHOD=""
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    AUTH_METHOD="token"
+elif command -v gh &>/dev/null && gh auth status &>/dev/null; then
+    AUTH_METHOD="gh"
+else
+    echo "Error: No GitHub authentication found"
     echo ""
-    echo "Add GITHUB_TOKEN to your Claude Code cloud environment:"
-    echo "  Claude app → Settings → Claude Code → Environment Variables"
+    echo "Option 1 — GitHub CLI (supports SSH, browser login, etc.):"
+    echo "  Install: https://cli.github.com"
+    echo "  Then run: gh auth login"
     echo ""
-    echo "Create a classic token at: https://github.com/settings/tokens/new"
-    echo "Required scopes: repo, workflow"
+    echo "Option 2 — Personal Access Token:"
+    echo "  Create a classic token at: https://github.com/settings/tokens/new"
+    echo "  Required scopes: repo, workflow"
+    echo "  Then: export GITHUB_TOKEN=your_token"
+    echo "  Or add it in Claude app → Settings → Claude Code → Environment Variables"
     exit 1
 fi
 
@@ -58,12 +68,42 @@ if [[ "$REPO_DETECTED" == true ]]; then
     echo "Detected repo: $REPO"
 fi
 
-API_BASE="https://api.github.com"
-
+# Unified API caller — works with either GITHUB_TOKEN or gh CLI
+# Fails fast on gh errors; curl -s always exits 0 on HTTP errors so the
+# downstream jq parsing handles error JSON (e.g. STATE becomes "null").
 gh_api() {
-    curl -s -H "Authorization: token $GITHUB_TOKEN" \
-         -H "Accept: application/vnd.github.v3+json" \
-         "$API_BASE$1"
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        local output
+        if ! output=$(gh api -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
+            echo "Error: GitHub API request failed for $1" >&2
+            echo "$output" >&2
+            exit 1
+        fi
+        echo "$output"
+    else
+        curl -s -H "Authorization: token $GITHUB_TOKEN" \
+             -H "Accept: application/vnd.github.v3+json" \
+             "https://api.github.com$1"
+    fi
+}
+
+# Paginated variant for list endpoints (reviews, comments).
+# gh --paginate may emit one JSON array per page; jq -s 'add' merges them.
+# curl path uses per_page=100 (single request, covers most PRs).
+gh_api_list() {
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        local output
+        if ! output=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
+            echo "Error: GitHub API request failed for $1" >&2
+            echo "$output" >&2
+            exit 1
+        fi
+        echo "$output" | jq -s 'add // []'
+    else
+        curl -s -H "Authorization: token $GITHUB_TOKEN" \
+             -H "Accept: application/vnd.github.v3+json" \
+             "https://api.github.com${1}?per_page=100"
+    fi
 }
 
 echo "Fetching review status for PR #$PR_NUMBER..."
@@ -80,9 +120,9 @@ if [[ "$STATE" != "open" ]]; then
     exit 0
 fi
 
-# Get reviews and comments
-REVIEWS=$(gh_api "/repos/$REPO/pulls/$PR_NUMBER/reviews")
-COMMENTS=$(gh_api "/repos/$REPO/pulls/$PR_NUMBER/comments")
+# Get reviews and comments (paginated to capture full history)
+REVIEWS=$(gh_api_list "/repos/$REPO/pulls/$PR_NUMBER/reviews")
+COMMENTS=$(gh_api_list "/repos/$REPO/pulls/$PR_NUMBER/comments")
 
 # Get the latest Codex review
 LATEST_CODEX=$(echo "$REVIEWS" | jq -r '
@@ -95,6 +135,7 @@ LATEST_CODEX=$(echo "$REVIEWS" | jq -r '
 if [[ -n "$LATEST_CODEX" ]]; then
     CODEX_BODY=$(echo "$LATEST_CODEX" | jq -r '.body // ""')
     CODEX_STATE=$(echo "$LATEST_CODEX" | jq -r '.state // ""')
+    CODEX_REVIEW_ID=$(echo "$LATEST_CODEX" | jq -r '.id')
 
     PASS_BY_STATE=false
     PASS_BY_BODY=false
@@ -114,8 +155,6 @@ if [[ -n "$LATEST_CODEX" ]]; then
     fi
 
     if [[ "$PASS_BY_STATE" == "true" || "$PASS_BY_BODY" == "true" ]]; then
-        CODEX_REVIEW_ID=$(echo "$LATEST_CODEX" | jq -r '.id')
-
         LATEST_COMMENTS=$(echo "$COMMENTS" | jq --arg rid "$CODEX_REVIEW_ID" '
             [.[] | select(.pull_request_review_id == ($rid | tonumber))] | length
         ')
@@ -145,22 +184,46 @@ if [[ -n "$LATEST_CODEX" ]]; then
     fi
 fi
 
-# Count actionable issues
-REVIEW_ISSUES=$(echo "$REVIEWS" | jq '[.[] | select(.body != "" and .body != null and .state != "APPROVED")] | length')
-INLINE_ISSUES=$(echo "$COMMENTS" | jq 'length')
+# Count actionable issues from the latest Codex review only.
+# Previous review rounds and other reviewers are handled by the pass check above;
+# the output below should only surface what the current Codex iteration flagged.
+REVIEW_ISSUES=0
+INLINE_ISSUES=0
+
+if [[ -n "${CODEX_REVIEW_ID:-}" ]]; then
+    REVIEW_ISSUES=$(echo "$LATEST_CODEX" | jq '
+        if (.body // "") != "" and .state != "APPROVED" then 1 else 0 end
+    ')
+    INLINE_ISSUES=$(echo "$COMMENTS" | jq --arg rid "$CODEX_REVIEW_ID" '
+        [.[] | select(.pull_request_review_id == ($rid | tonumber))] | length
+    ')
+fi
+
 TOTAL=$((REVIEW_ISSUES + INLINE_ISSUES))
 
 if [[ "$TOTAL" -eq 0 ]]; then
-    echo "No review issues found on PR #$PR_NUMBER"
-    echo ""
-    echo "The PR may be:"
-    echo "  - Already approved"
-    echo "  - Awaiting initial review"
-    echo "  - Having all issues resolved"
+    if [[ "${PASS_BY_STATE:-false}" == "true" || "${PASS_BY_BODY:-false}" == "true" ]]; then
+        echo "==========================================="
+        echo "CODEX HAS NO ISSUES"
+        echo "==========================================="
+        echo ""
+        echo "Codex approved or found no problems, but other reviewers"
+        echo "have pending feedback on this PR."
+        echo ""
+        echo "Check the PR for non-Codex review comments:"
+        echo "https://github.com/$REPO/pull/$PR_NUMBER"
+    else
+        echo "No review issues found on PR #$PR_NUMBER"
+        echo ""
+        echo "The PR may be:"
+        echo "  - Already approved"
+        echo "  - Awaiting initial review"
+        echo "  - Having all issues resolved"
+    fi
     exit 0
 fi
 
-# Format output for Claude Code
+# Format output for Claude Code — scoped to the latest Codex review
 cat <<EOF
 ## Code Review Issues for PR #$PR_NUMBER
 
@@ -171,13 +234,14 @@ Please fix the following $TOTAL issue(s):
 
 EOF
 
-echo "$REVIEWS" | jq -r '
-    .[] | select(.body != "" and .body != null and .state != "APPROVED") |
-    "### Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
-'
+if [[ "$REVIEW_ISSUES" -gt 0 ]]; then
+    echo "$LATEST_CODEX" | jq -r '
+        "### Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
+    '
+fi
 
-echo "$COMMENTS" | jq -r '
-    .[] |
+echo "$COMMENTS" | jq -r --arg rid "${CODEX_REVIEW_ID:-}" '
+    .[] | select(.pull_request_review_id == ($rid | tonumber)) |
     "### Issue in `\(.path)`" +
     (if .line then " (line \(.line))" else "" end) +
     "\n**From:** \(.user.login)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"

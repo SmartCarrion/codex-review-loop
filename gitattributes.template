@@ -1,0 +1,12 @@
+# Codex Review Loop — hide tool files from PR diffs
+#
+# These files must be committed to work, but they're tooling — not the code
+# being reviewed. linguist-generated collapses them by default in GitHub
+# PR diffs so reviewers can focus on actual changes.
+#
+# Reviewers can still expand them in the diff if needed.
+
+scripts/fetch-review-issues.sh linguist-generated
+scripts/trigger-rereview.sh linguist-generated
+.claude/skills/codex-review-loop/SKILL.md linguist-generated
+.github/workflows/review-notifier.yml linguist-generated

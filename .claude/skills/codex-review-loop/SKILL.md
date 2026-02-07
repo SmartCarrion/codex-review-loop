@@ -30,5 +30,5 @@ Run the code review loop for PR $ARGUMENTS.
 
 ## Requirements
 
-- `GITHUB_TOKEN` environment variable must be set
+- GitHub auth: either `gh` CLI authenticated (`gh auth login`) or `GITHUB_TOKEN` environment variable
 - Codex must be enabled on the repository
