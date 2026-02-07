@@ -26,7 +26,8 @@ cp -r codex-review-loop/scripts your-project/
 cp -r codex-review-loop/.claude your-project/
 
 # Hide tool files from PR diffs (optional but recommended)
-cp codex-review-loop/gitattributes.template your-project/.gitattributes
+# Uses >> to append, so existing .gitattributes rules are preserved
+cat codex-review-loop/gitattributes.template >> your-project/.gitattributes
 
 # Optional: GitHub Action for PR notifications
 cp codex-review-loop/.github/workflows/review-notifier.yml your-project/.github/workflows/
@@ -121,7 +122,7 @@ gitattributes.template                      # .gitattributes for target repos
 - [Claude Code](https://claude.ai/code)
 - [Codex](https://chatgpt.com/codex) enabled on your repository
 - GitHub auth: [GitHub CLI](https://cli.github.com) (`gh auth login`) **or** a classic token with `repo` + `workflow` scopes
-- `bash`, `curl`, `jq` (curl/jq only needed when using token auth; `gh` CLI handles its own HTTP)
+- `bash`, `jq`, and `curl` (curl only needed for token auth; `jq` is required for both auth methods)
 
 ## Made by Think On Labs
 
