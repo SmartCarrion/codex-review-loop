@@ -82,10 +82,13 @@ gh_api() {
 }
 
 # Paginated variant for list endpoints (reviews, comments).
-# gh --paginate fetches all pages; curl path uses per_page=100.
+# gh --paginate may emit one JSON array per page; jq -s 'add' merges them.
+# curl path uses per_page=100 (single request, covers most PRs).
 gh_api_list() {
     if [[ "$AUTH_METHOD" == "gh" ]]; then
-        gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>/dev/null || echo '[]'
+        gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>/dev/null \
+            | jq -s 'add // []' \
+            || echo '[]'
     else
         curl -s -H "Authorization: token $GITHUB_TOKEN" \
              -H "Accept: application/vnd.github.v3+json" \
