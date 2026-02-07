@@ -81,6 +81,18 @@ gh_api() {
     fi
 }
 
+# Paginated variant for list endpoints (reviews, comments).
+# gh --paginate fetches all pages; curl path uses per_page=100.
+gh_api_list() {
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>/dev/null || echo '[]'
+    else
+        curl -s -H "Authorization: token $GITHUB_TOKEN" \
+             -H "Accept: application/vnd.github.v3+json" \
+             "https://api.github.com${1}?per_page=100"
+    fi
+}
+
 echo "Fetching review status for PR #$PR_NUMBER..."
 echo ""
 
@@ -95,9 +107,9 @@ if [[ "$STATE" != "open" ]]; then
     exit 0
 fi
 
-# Get reviews and comments
-REVIEWS=$(gh_api "/repos/$REPO/pulls/$PR_NUMBER/reviews")
-COMMENTS=$(gh_api "/repos/$REPO/pulls/$PR_NUMBER/comments")
+# Get reviews and comments (paginated to capture full history)
+REVIEWS=$(gh_api_list "/repos/$REPO/pulls/$PR_NUMBER/reviews")
+COMMENTS=$(gh_api_list "/repos/$REPO/pulls/$PR_NUMBER/comments")
 
 # Get the latest Codex review
 LATEST_CODEX=$(echo "$REVIEWS" | jq -r '
@@ -110,6 +122,7 @@ LATEST_CODEX=$(echo "$REVIEWS" | jq -r '
 if [[ -n "$LATEST_CODEX" ]]; then
     CODEX_BODY=$(echo "$LATEST_CODEX" | jq -r '.body // ""')
     CODEX_STATE=$(echo "$LATEST_CODEX" | jq -r '.state // ""')
+    CODEX_REVIEW_ID=$(echo "$LATEST_CODEX" | jq -r '.id')
 
     PASS_BY_STATE=false
     PASS_BY_BODY=false
@@ -129,8 +142,6 @@ if [[ -n "$LATEST_CODEX" ]]; then
     fi
 
     if [[ "$PASS_BY_STATE" == "true" || "$PASS_BY_BODY" == "true" ]]; then
-        CODEX_REVIEW_ID=$(echo "$LATEST_CODEX" | jq -r '.id')
-
         LATEST_COMMENTS=$(echo "$COMMENTS" | jq --arg rid "$CODEX_REVIEW_ID" '
             [.[] | select(.pull_request_review_id == ($rid | tonumber))] | length
         ')
@@ -160,9 +171,21 @@ if [[ -n "$LATEST_CODEX" ]]; then
     fi
 fi
 
-# Count actionable issues
-REVIEW_ISSUES=$(echo "$REVIEWS" | jq '[.[] | select(.body != "" and .body != null and .state != "APPROVED")] | length')
-INLINE_ISSUES=$(echo "$COMMENTS" | jq 'length')
+# Count actionable issues from the latest Codex review only.
+# Previous review rounds and other reviewers are handled by the pass check above;
+# the output below should only surface what the current Codex iteration flagged.
+REVIEW_ISSUES=0
+INLINE_ISSUES=0
+
+if [[ -n "${CODEX_REVIEW_ID:-}" ]]; then
+    REVIEW_ISSUES=$(echo "$LATEST_CODEX" | jq '
+        if (.body // "") != "" and .state != "APPROVED" then 1 else 0 end
+    ')
+    INLINE_ISSUES=$(echo "$COMMENTS" | jq --arg rid "$CODEX_REVIEW_ID" '
+        [.[] | select(.pull_request_review_id == ($rid | tonumber))] | length
+    ')
+fi
+
 TOTAL=$((REVIEW_ISSUES + INLINE_ISSUES))
 
 if [[ "$TOTAL" -eq 0 ]]; then
@@ -175,7 +198,7 @@ if [[ "$TOTAL" -eq 0 ]]; then
     exit 0
 fi
 
-# Format output for Claude Code
+# Format output for Claude Code — scoped to the latest Codex review
 cat <<EOF
 ## Code Review Issues for PR #$PR_NUMBER
 
@@ -186,13 +209,14 @@ Please fix the following $TOTAL issue(s):
 
 EOF
 
-echo "$REVIEWS" | jq -r '
-    .[] | select(.body != "" and .body != null and .state != "APPROVED") |
-    "### Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
-'
+if [[ "$REVIEW_ISSUES" -gt 0 ]]; then
+    echo "$LATEST_CODEX" | jq -r '
+        "### Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
+    '
+fi
 
-echo "$COMMENTS" | jq -r '
-    .[] |
+echo "$COMMENTS" | jq -r --arg rid "${CODEX_REVIEW_ID:-}" '
+    .[] | select(.pull_request_review_id == ($rid | tonumber)) |
     "### Issue in `\(.path)`" +
     (if .line then " (line \(.line))" else "" end) +
     "\n**From:** \(.user.login)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
