@@ -73,14 +73,15 @@ jobs:
               pull_number: prNumber
             });
 
-            const reviews = await github.rest.pulls.listReviews({
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: prNumber
+              pull_number: prNumber,
+              per_page: 100
             });
 
             const codexPattern = /codex-connector|chatgpt-codex/i;
-            const codexReviews = reviews.data
+            const codexReviews = reviews
               .filter(r => codexPattern.test(r.user.login))
               .sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
 
@@ -94,10 +95,11 @@ jobs:
             const latestReviewId = latestCodexReview.id;
             console.log("Latest Codex review ID: " + latestReviewId);
 
-            const reviewComments = await github.rest.pulls.listReviewComments({
+            const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: prNumber
+              pull_number: prNumber,
+              per_page: 100
             });
 
             const issues = [];
@@ -119,7 +121,7 @@ jobs:
               });
             }
 
-            for (const comment of reviewComments.data) {
+            for (const comment of reviewComments) {
               if (comment.pull_request_review_id === latestReviewId) {
                 issues.push({
                   type: 'inline',
@@ -259,13 +261,17 @@ jobs:
 
       - name: Send webhook (optional)
         if: steps.issues.outputs.has_issues == 'true' && vars.REVIEW_WEBHOOK_URL
+        env:
+          WEBHOOK_URL: ${{ vars.REVIEW_WEBHOOK_URL }}
+          WEBHOOK_BRANCH: ${{ steps.issues.outputs.branch }}
         run: |
-          curl -X POST "${{ vars.REVIEW_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "pr": ${{ steps.pr.outputs.number }},
-              "repo": "${{ github.repository }}",
-              "branch": "${{ steps.issues.outputs.branch }}",
-              "issue_count": ${{ steps.issues.outputs.count }},
-              "url": "https://github.com/${{ github.repository }}/pull/${{ steps.pr.outputs.number }}"
-            }' || echo "Webhook failed (non-fatal)"
+          jq -n \
+            --argjson pr "${{ steps.pr.outputs.number }}" \
+            --arg repo "${{ github.repository }}" \
+            --arg branch "$WEBHOOK_BRANCH" \
+            --argjson issue_count "${{ steps.issues.outputs.count }}" \
+            --arg url "https://github.com/${{ github.repository }}/pull/${{ steps.pr.outputs.number }}" \
+            '{pr: $pr, repo: $repo, branch: $branch, issue_count: $issue_count, url: $url}' \
+          | curl -X POST "$WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d @- || echo "Webhook failed (non-fatal)"
