@@ -8,5 +8,7 @@
 
 scripts/fetch-review-issues.sh linguist-generated
 scripts/trigger-rereview.sh linguist-generated
+scripts/wait-for-review.sh linguist-generated
 .claude/skills/codex-review-loop/SKILL.md linguist-generated
+.claude/settings.json linguist-generated
 .github/workflows/review-notifier.yml linguist-generated

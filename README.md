@@ -111,9 +111,11 @@ The PR is ready to merge!
 
 ```
 .claude/skills/codex-review-loop/SKILL.md  # Claude Code skill
-scripts/fetch-review-issues.sh              # Fetch review status
-scripts/trigger-rereview.sh                 # Trigger @codex review
-.github/workflows/review-notifier.yml       # Optional PR notifications
+.claude/settings.json                       # Scoped permissions (auto-approves the loop's commands)
+scripts/fetch-review-issues.sh              # Fetch current Codex issues (sole source of truth)
+scripts/trigger-rereview.sh                 # Post @codex review; neutralizes stale sticky
+scripts/wait-for-review.sh                  # Block until a NEW Codex review arrives
+.github/workflows/review-notifier.yml       # Optional PR notifications (sticky with review-ID anchor)
 gitattributes.template                      # .gitattributes for target repos
 ```
 
