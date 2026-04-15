@@ -62,10 +62,143 @@ fi
 
 echo "Triggering re-review for PR #$PR_NUMBER..."
 
+# Before triggering, neutralize the old "Review Issues Detected" sticky
+# so watchers don't read stale issues in the gap before the new Codex
+# review completes. We rewrite it in place rather than deleting so the
+# comment history stays intact.
+NOTIFICATION_MARKER="<!-- claude-review-notification -->"
+
+# Look up the current latest Codex review ID so the stale body can embed
+# it in the `wait-for-review.sh` suggestion. Without this, users would
+# get `./scripts/wait-for-review.sh <PR>` with no LAST_REVIEW_ID, which
+# exits immediately against any existing review (empty LAST_REVIEW_ID
+# never equals a real review id) and causes fetching stale issues.
+get_latest_codex_review_id() {
+    local reviews_json
+    # Assign the fallback to the variable — don't `|| echo "[]"`, which
+    # writes to the function's stdout and contaminates the final `jq -r`
+    # output ($(...) would capture "[]" + the real result concatenated).
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        reviews_json=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" \
+            "repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null | jq -s 'add // []') \
+            || reviews_json="[]"
+    else
+        reviews_json=$(curl_paginate "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) \
+            || reviews_json="[]"
+    fi
+    echo "${reviews_json:-[]}" | jq -r '
+        [.[] | select(.user.login | test("codex-connector|chatgpt-codex"; "i"))] |
+        sort_by(.submitted_at) | .[-1].id // empty
+    '
+}
+
+# Note on endpoint paths: we pass `repos/...` (no leading slash) to
+# `gh api` because MSYS/Git Bash on Windows rewrites paths starting
+# with "/" into Windows filesystem paths before the child process
+# sees them. `gh api` accepts both forms, so this is portable.
+
+# Follow GitHub's Link: rel="next" header to page through results when
+# using token auth. Without this, busy PRs (100+ comments) can have the
+# notification sticky beyond page 1, so it never gets neutralized.
+curl_paginate() {
+    local url="$1"
+    local sep="?"
+    [[ "$url" == *"?"* ]] && sep="&"
+    url="${url}${sep}per_page=100"
+
+    local all="[]"
+    local headers_file
+    headers_file=$(mktemp)
+
+    while [[ -n "$url" ]]; do
+        local body
+        body=$(curl -s -D "$headers_file" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$url") || { rm -f "$headers_file"; return 1; }
+
+        all=$(jq -n --argjson a "$all" --argjson b "$body" '$a + ($b // [])')
+
+        url=$(grep -i '^link:' "$headers_file" 2>/dev/null \
+              | tr ',' '\n' \
+              | grep 'rel="next"' \
+              | sed -E 's/.*<([^>]+)>.*/\1/' \
+              | head -1 || true)
+    done
+
+    rm -f "$headers_file"
+    echo "$all"
+}
+
+neutralize_sticky() {
+    local comment_id
+    local existing_json
+
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        existing_json=$(gh api --paginate \
+            -H "Accept: application/vnd.github.v3+json" \
+            "repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null | jq -s 'add // []') || return 0
+    else
+        existing_json=$(curl_paginate \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments") || return 0
+    fi
+
+    comment_id=$(echo "$existing_json" | jq -r --arg m "$NOTIFICATION_MARKER" '
+        [.[] | select(.body | contains($m))] | .[-1].id // empty
+    ')
+
+    [[ -z "$comment_id" ]] && return 0
+
+    # Build the stale body with the current Codex review ID embedded in
+    # the wait-for-review.sh suggestion. wait-for-review.sh treats an
+    # empty LAST_REVIEW_ID as "exit on any review", so without this the
+    # suggested command would return immediately instead of waiting.
+    local prior_review_id
+    prior_review_id=$(get_latest_codex_review_id)
+
+    local wait_cmd="./scripts/wait-for-review.sh $PR_NUMBER"
+    if [[ -n "$prior_review_id" ]]; then
+        wait_cmd="./scripts/wait-for-review.sh $PR_NUMBER $prior_review_id"
+    fi
+
+    local stale_body
+    stale_body=$(cat <<EOF
+$NOTIFICATION_MARKER
+<!-- codex-review-id: pending -->
+## Fixes pushed — awaiting Codex re-review
+
+The previous review's issues have been addressed and pushed. Any
+issue list above this point is **stale** and should be ignored until
+a new Codex review completes.
+
+Run \`$wait_cmd\` to block until the next review arrives, then
+\`./scripts/fetch-review-issues.sh $PR_NUMBER\` for the fresh issue list.
+EOF
+)
+
+    local patch_json
+    patch_json=$(jq -n --arg body "$stale_body" '{body: $body}')
+
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        gh api "repos/$REPO/issues/comments/$comment_id" \
+            --method PATCH --input - <<< "$patch_json" >/dev/null 2>&1 \
+            && echo "Neutralized stale notification comment $comment_id"
+    else
+        curl -s -X PATCH \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$patch_json" \
+            "https://api.github.com/repos/$REPO/issues/comments/$comment_id" >/dev/null \
+            && echo "Neutralized stale notification comment $comment_id"
+    fi
+}
+
+neutralize_sticky || true
+
 COMMENT_BODY='{"body": "@codex review\n\n*Re-review requested after fixes*"}'
 
 if [[ "$AUTH_METHOD" == "gh" ]]; then
-    RESPONSE=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" \
+    RESPONSE=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
         --method POST \
         --input - <<< "$COMMENT_BODY" 2>&1) && HTTP_OK=true || HTTP_OK=false
 

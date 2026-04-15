@@ -68,14 +68,21 @@ if [[ "$REPO_DETECTED" == true ]]; then
     echo "Detected repo: $REPO"
 fi
 
-# Unified API caller — works with either GITHUB_TOKEN or gh CLI
+# Unified API caller — works with either GITHUB_TOKEN or gh CLI.
 # Fails fast on gh errors; curl -s always exits 0 on HTTP errors so the
 # downstream jq parsing handles error JSON (e.g. STATE becomes "null").
+#
+# The leading "/" is stripped before passing to `gh api` because MSYS/
+# Git Bash on Windows rewrites paths starting with "/" into Windows
+# filesystem paths (e.g. "/repos/..." → "C:/Program Files/Git/repos/...")
+# before `gh` sees them. `gh api` accepts the endpoint with or without
+# the leading slash, so normalizing here makes the scripts portable.
 gh_api() {
+    local endpoint="${1#/}"
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         local output
-        if ! output=$(gh api -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
-            echo "Error: GitHub API request failed for $1" >&2
+        if ! output=$(gh api -H "Accept: application/vnd.github.v3+json" "$endpoint" 2>&1); then
+            echo "Error: GitHub API request failed for /$endpoint" >&2
             echo "$output" >&2
             exit 1
         fi
@@ -83,26 +90,59 @@ gh_api() {
     else
         curl -s -H "Authorization: token $GITHUB_TOKEN" \
              -H "Accept: application/vnd.github.v3+json" \
-             "https://api.github.com$1"
+             "https://api.github.com/$endpoint"
     fi
 }
 
+# Follow GitHub's Link: rel="next" header to page through results when
+# using token auth. gh handles this natively via --paginate, but curl
+# needs it done manually — otherwise busy PRs (100+ reviews/comments)
+# can have the latest data beyond page 1 and we'd miss it.
+curl_paginate() {
+    local url="$1"
+    local sep="?"
+    [[ "$url" == *"?"* ]] && sep="&"
+    url="${url}${sep}per_page=100"
+
+    local all="[]"
+    local headers_file
+    headers_file=$(mktemp)
+
+    while [[ -n "$url" ]]; do
+        local body
+        body=$(curl -s -D "$headers_file" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$url") || { rm -f "$headers_file"; return 1; }
+
+        all=$(jq -n --argjson a "$all" --argjson b "$body" '$a + ($b // [])')
+
+        # Parse `Link: <...>; rel="next", <...>; rel="last"` and extract
+        # the URL whose rel is "next". Empty when there is no next page.
+        url=$(grep -i '^link:' "$headers_file" 2>/dev/null \
+              | tr ',' '\n' \
+              | grep 'rel="next"' \
+              | sed -E 's/.*<([^>]+)>.*/\1/' \
+              | head -1 || true)
+    done
+
+    rm -f "$headers_file"
+    echo "$all"
+}
+
 # Paginated variant for list endpoints (reviews, comments).
-# gh --paginate may emit one JSON array per page; jq -s 'add' merges them.
-# curl path uses per_page=100 (single request, covers most PRs).
 gh_api_list() {
+    local endpoint="${1#/}"
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         local output
-        if ! output=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
-            echo "Error: GitHub API request failed for $1" >&2
+        if ! output=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" "$endpoint" 2>&1); then
+            echo "Error: GitHub API request failed for /$endpoint" >&2
             echo "$output" >&2
             exit 1
         fi
         echo "$output" | jq -s 'add // []'
     else
-        curl -s -H "Authorization: token $GITHUB_TOKEN" \
-             -H "Accept: application/vnd.github.v3+json" \
-             "https://api.github.com${1}?per_page=100"
+        curl_paginate "https://api.github.com/${endpoint}"
     fi
 }
 
@@ -185,21 +225,30 @@ if [[ -n "$LATEST_CODEX" ]]; then
 fi
 
 # Count actionable issues from the latest Codex review only.
-# Previous review rounds and other reviewers are handled by the pass check above;
-# the output below should only surface what the current Codex iteration flagged.
-REVIEW_ISSUES=0
+#
+# Counting rule (do not change without understanding why):
+#   - Inline review comments are always counted: each one is a concrete,
+#     file-scoped piece of feedback.
+#   - The review *body* is normally a summary of what's in the inline
+#     comments ("Reviewed X files, found N issues…"). Counting it as +1
+#     double-counts and produces the off-by-one users have seen.
+#   - The one case where the body IS the feedback: state=CHANGES_REQUESTED
+#     with zero inline comments. Then the body is the only signal, so it
+#     counts as exactly 1 issue.
 INLINE_ISSUES=0
+BODY_IS_ISSUE=0
 
 if [[ -n "${CODEX_REVIEW_ID:-}" ]]; then
-    REVIEW_ISSUES=$(echo "$LATEST_CODEX" | jq '
-        if (.body // "") != "" and .state != "APPROVED" then 1 else 0 end
-    ')
     INLINE_ISSUES=$(echo "$COMMENTS" | jq --arg rid "$CODEX_REVIEW_ID" '
         [.[] | select(.pull_request_review_id == ($rid | tonumber))] | length
     ')
+    if [[ "$INLINE_ISSUES" -eq 0 ]] && [[ "$CODEX_STATE" == "CHANGES_REQUESTED" ]] \
+       && [[ -n "$CODEX_BODY" ]]; then
+        BODY_IS_ISSUE=1
+    fi
 fi
 
-TOTAL=$((REVIEW_ISSUES + INLINE_ISSUES))
+TOTAL=$((INLINE_ISSUES + BODY_IS_ISSUE))
 
 if [[ "$TOTAL" -eq 0 ]]; then
     if [[ "${PASS_BY_STATE:-false}" == "true" || "${PASS_BY_BODY:-false}" == "true" ]]; then
@@ -223,28 +272,42 @@ if [[ "$TOTAL" -eq 0 ]]; then
     exit 0
 fi
 
-# Format output for Claude Code — scoped to the latest Codex review
+# Format output for Claude Code — scoped to the latest Codex review.
+# The review body renders as a summary header (context only, not counted
+# as an issue) unless it's the only signal (CHANGES_REQUESTED + no inline
+# comments), in which case it's rendered as Issue 1 below.
 cat <<EOF
 ## Code Review Issues for PR #$PR_NUMBER
 
 **Branch:** \`$BRANCH\`
 **Title:** $TITLE
-
-Please fix the following $TOTAL issue(s):
+**Codex review ID:** $CODEX_REVIEW_ID
 
 EOF
 
-if [[ "$REVIEW_ISSUES" -gt 0 ]]; then
+if [[ -n "$CODEX_BODY" ]] && [[ "$BODY_IS_ISSUE" -eq 0 ]]; then
+    # Summary header — context for the inline issues, not an issue itself.
+    echo "**Codex summary (context, not an issue to fix directly):**"
+    echo ""
+    echo "$CODEX_BODY" | sed 's/^/> /'
+    echo ""
+fi
+
+echo "Please fix the following $TOTAL issue(s):"
+echo ""
+
+if [[ "$BODY_IS_ISSUE" -eq 1 ]]; then
     echo "$LATEST_CODEX" | jq -r '
-        "### Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
+        "### Issue 1 — Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
     '
 fi
 
-echo "$COMMENTS" | jq -r --arg rid "${CODEX_REVIEW_ID:-}" '
-    .[] | select(.pull_request_review_id == ($rid | tonumber)) |
-    "### Issue in `\(.path)`" +
-    (if .line then " (line \(.line))" else "" end) +
-    "\n**From:** \(.user.login)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
+echo "$COMMENTS" | jq -r --arg rid "${CODEX_REVIEW_ID:-}" --argjson offset "$BODY_IS_ISSUE" '
+    [.[] | select(.pull_request_review_id == ($rid | tonumber))] |
+    to_entries[] |
+    "### Issue \(.key + 1 + $offset) in `\(.value.path)`" +
+    (if .value.line then " (line \(.value.line))" else "" end) +
+    "\n**From:** \(.value.user.login)\n**Feedback:**\n> \(.value.body | split("\n") | join("\n> "))\n"
 '
 
 cat <<EOF
@@ -254,4 +317,6 @@ After fixing all issues:
 1. Commit your changes
 2. Push to origin
 3. Run: ./scripts/trigger-rereview.sh $PR_NUMBER
+4. Run: ./scripts/wait-for-review.sh $PR_NUMBER $CODEX_REVIEW_ID
+   (blocks until a new Codex review arrives, then re-run this script)
 EOF
