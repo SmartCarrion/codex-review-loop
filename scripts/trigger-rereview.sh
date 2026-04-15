@@ -75,11 +75,16 @@ NOTIFICATION_MARKER="<!-- claude-review-notification -->"
 # never equals a real review id) and causes fetching stale issues.
 get_latest_codex_review_id() {
     local reviews_json
+    # Assign the fallback to the variable — don't `|| echo "[]"`, which
+    # writes to the function's stdout and contaminates the final `jq -r`
+    # output ($(...) would capture "[]" + the real result concatenated).
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         reviews_json=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" \
-            "repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null | jq -s 'add // []') || echo "[]"
+            "repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null | jq -s 'add // []') \
+            || reviews_json="[]"
     else
-        reviews_json=$(curl_paginate "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) || echo "[]"
+        reviews_json=$(curl_paginate "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) \
+            || reviews_json="[]"
     fi
     echo "${reviews_json:-[]}" | jq -r '
         [.[] | select(.user.login | test("codex-connector|chatgpt-codex"; "i"))] |
