@@ -185,21 +185,30 @@ if [[ -n "$LATEST_CODEX" ]]; then
 fi
 
 # Count actionable issues from the latest Codex review only.
-# Previous review rounds and other reviewers are handled by the pass check above;
-# the output below should only surface what the current Codex iteration flagged.
-REVIEW_ISSUES=0
+#
+# Counting rule (do not change without understanding why):
+#   - Inline review comments are always counted: each one is a concrete,
+#     file-scoped piece of feedback.
+#   - The review *body* is normally a summary of what's in the inline
+#     comments ("Reviewed X files, found N issues…"). Counting it as +1
+#     double-counts and produces the off-by-one users have seen.
+#   - The one case where the body IS the feedback: state=CHANGES_REQUESTED
+#     with zero inline comments. Then the body is the only signal, so it
+#     counts as exactly 1 issue.
 INLINE_ISSUES=0
+BODY_IS_ISSUE=0
 
 if [[ -n "${CODEX_REVIEW_ID:-}" ]]; then
-    REVIEW_ISSUES=$(echo "$LATEST_CODEX" | jq '
-        if (.body // "") != "" and .state != "APPROVED" then 1 else 0 end
-    ')
     INLINE_ISSUES=$(echo "$COMMENTS" | jq --arg rid "$CODEX_REVIEW_ID" '
         [.[] | select(.pull_request_review_id == ($rid | tonumber))] | length
     ')
+    if [[ "$INLINE_ISSUES" -eq 0 ]] && [[ "$CODEX_STATE" == "CHANGES_REQUESTED" ]] \
+       && [[ -n "$CODEX_BODY" ]]; then
+        BODY_IS_ISSUE=1
+    fi
 fi
 
-TOTAL=$((REVIEW_ISSUES + INLINE_ISSUES))
+TOTAL=$((INLINE_ISSUES + BODY_IS_ISSUE))
 
 if [[ "$TOTAL" -eq 0 ]]; then
     if [[ "${PASS_BY_STATE:-false}" == "true" || "${PASS_BY_BODY:-false}" == "true" ]]; then
@@ -223,28 +232,42 @@ if [[ "$TOTAL" -eq 0 ]]; then
     exit 0
 fi
 
-# Format output for Claude Code — scoped to the latest Codex review
+# Format output for Claude Code — scoped to the latest Codex review.
+# The review body renders as a summary header (context only, not counted
+# as an issue) unless it's the only signal (CHANGES_REQUESTED + no inline
+# comments), in which case it's rendered as Issue 1 below.
 cat <<EOF
 ## Code Review Issues for PR #$PR_NUMBER
 
 **Branch:** \`$BRANCH\`
 **Title:** $TITLE
-
-Please fix the following $TOTAL issue(s):
+**Codex review ID:** $CODEX_REVIEW_ID
 
 EOF
 
-if [[ "$REVIEW_ISSUES" -gt 0 ]]; then
+if [[ -n "$CODEX_BODY" ]] && [[ "$BODY_IS_ISSUE" -eq 0 ]]; then
+    # Summary header — context for the inline issues, not an issue itself.
+    echo "**Codex summary (context, not an issue to fix directly):**"
+    echo ""
+    echo "$CODEX_BODY" | sed 's/^/> /'
+    echo ""
+fi
+
+echo "Please fix the following $TOTAL issue(s):"
+echo ""
+
+if [[ "$BODY_IS_ISSUE" -eq 1 ]]; then
     echo "$LATEST_CODEX" | jq -r '
-        "### Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
+        "### Issue 1 — Review from \(.user.login)\n**Status:** \(.state)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
     '
 fi
 
-echo "$COMMENTS" | jq -r --arg rid "${CODEX_REVIEW_ID:-}" '
-    .[] | select(.pull_request_review_id == ($rid | tonumber)) |
-    "### Issue in `\(.path)`" +
-    (if .line then " (line \(.line))" else "" end) +
-    "\n**From:** \(.user.login)\n**Feedback:**\n> \(.body | split("\n") | join("\n> "))\n"
+echo "$COMMENTS" | jq -r --arg rid "${CODEX_REVIEW_ID:-}" --argjson offset "$BODY_IS_ISSUE" '
+    [.[] | select(.pull_request_review_id == ($rid | tonumber))] |
+    to_entries[] |
+    "### Issue \(.key + 1 + $offset) in `\(.value.path)`" +
+    (if .value.line then " (line \(.value.line))" else "" end) +
+    "\n**From:** \(.value.user.login)\n**Feedback:**\n> \(.value.body | split("\n") | join("\n> "))\n"
 '
 
 cat <<EOF
@@ -254,4 +277,6 @@ After fixing all issues:
 1. Commit your changes
 2. Push to origin
 3. Run: ./scripts/trigger-rereview.sh $PR_NUMBER
+4. Run: ./scripts/wait-for-review.sh $PR_NUMBER $CODEX_REVIEW_ID
+   (blocks until a new Codex review arrives, then re-run this script)
 EOF

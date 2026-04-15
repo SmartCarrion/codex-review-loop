@@ -62,6 +62,66 @@ fi
 
 echo "Triggering re-review for PR #$PR_NUMBER..."
 
+# Before triggering, neutralize the old "Review Issues Detected" sticky
+# so watchers don't read stale issues in the gap before the new Codex
+# review completes. We rewrite it in place rather than deleting so the
+# comment history stays intact.
+NOTIFICATION_MARKER="<!-- claude-review-notification -->"
+STALE_BODY=$(cat <<EOF
+$NOTIFICATION_MARKER
+<!-- codex-review-id: pending -->
+## Fixes pushed — awaiting Codex re-review
+
+The previous review's issues have been addressed and pushed. Any
+issue list above this point is **stale** and should be ignored until
+a new Codex review completes.
+
+Run \`./scripts/wait-for-review.sh $PR_NUMBER\` to block until the
+next review arrives, then \`./scripts/fetch-review-issues.sh $PR_NUMBER\`
+for the fresh issue list.
+EOF
+)
+
+neutralize_sticky() {
+    local comment_id
+    local existing_json
+
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        existing_json=$(gh api --paginate \
+            -H "Accept: application/vnd.github.v3+json" \
+            "/repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null | jq -s 'add // []') || return 0
+    else
+        existing_json=$(curl -s \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100") || return 0
+    fi
+
+    comment_id=$(echo "$existing_json" | jq -r --arg m "$NOTIFICATION_MARKER" '
+        [.[] | select(.body | contains($m))] | .[-1].id // empty
+    ')
+
+    [[ -z "$comment_id" ]] && return 0
+
+    local patch_json
+    patch_json=$(jq -n --arg body "$STALE_BODY" '{body: $body}')
+
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        gh api "/repos/$REPO/issues/comments/$comment_id" \
+            --method PATCH --input - <<< "$patch_json" >/dev/null 2>&1 \
+            && echo "Neutralized stale notification comment $comment_id"
+    else
+        curl -s -X PATCH \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$patch_json" \
+            "https://api.github.com/repos/$REPO/issues/comments/$comment_id" >/dev/null \
+            && echo "Neutralized stale notification comment $comment_id"
+    fi
+}
+
+neutralize_sticky || true
+
 COMMENT_BODY='{"body": "@codex review\n\n*Re-review requested after fixes*"}'
 
 if [[ "$AUTH_METHOD" == "gh" ]]; then

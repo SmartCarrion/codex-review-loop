@@ -103,16 +103,35 @@ jobs:
             });
 
             const issues = [];
-
             const bodyText = latestCodexReview.body || "";
-            const isTemplateOnly = bodyText.includes("Codex Review") &&
-                                   bodyText.includes("About Codex in GitHub") &&
-                                   !bodyText.includes("suggestion") &&
-                                   !bodyText.includes("issue") &&
-                                   !bodyText.includes("problem");
 
-            if (!isTemplateOnly && bodyText.trim() && latestCodexReview.state !== 'APPROVED') {
+            // Counting rule: inline comments are always issues. The review body
+            // is a summary — render it as context, not as an issue — UNLESS it's
+            // the only signal (CHANGES_REQUESTED + zero inline comments), in
+            // which case it IS the feedback and counts as one issue.
+            // This mirrors scripts/fetch-review-issues.sh. Keep the two in sync.
+
+            const inlineComments = reviewComments.filter(
+              c => c.pull_request_review_id === latestReviewId
+            );
+
+            for (const comment of inlineComments) {
               issues.push({
+                type: 'inline',
+                body: comment.body,
+                path: comment.path,
+                line: comment.line || comment.original_line,
+                user: comment.user.login,
+                url: comment.html_url
+              });
+            }
+
+            const bodyIsOnlySignal = inlineComments.length === 0 &&
+                                     latestCodexReview.state === 'CHANGES_REQUESTED' &&
+                                     bodyText.trim() !== '';
+
+            if (bodyIsOnlySignal) {
+              issues.unshift({
                 type: 'review',
                 body: bodyText,
                 user: latestCodexReview.user.login,
@@ -121,28 +140,33 @@ jobs:
               });
             }
 
-            for (const comment of reviewComments) {
-              if (comment.pull_request_review_id === latestReviewId) {
-                issues.push({
-                  type: 'inline',
-                  body: comment.body,
-                  path: comment.path,
-                  line: comment.line || comment.original_line,
-                  user: comment.user.login,
-                  url: comment.html_url
-                });
-              }
-            }
+            // Surface the review body summary as context (not counted) when
+            // there are inline issues. Claude gets the summary for framing
+            // without it inflating the issue count.
+            const summaryContext = (!bodyIsOnlySignal && bodyText.trim() !== '' &&
+                                    latestCodexReview.state !== 'APPROVED')
+              ? bodyText : '';
 
             if (issues.length === 0) {
               console.log('No actionable issues in latest Codex review');
               core.setOutput('has_issues', 'false');
+              core.setOutput('review_id', String(latestReviewId));
               return;
             }
 
             let prompt = `## Code Review Issues for PR #${prNumber}\n\n`;
             prompt += `**Branch:** \`${pr.data.head.ref}\`\n`;
-            prompt += `**Title:** ${pr.data.title}\n\n`;
+            prompt += `**Title:** ${pr.data.title}\n`;
+            prompt += `**Codex review ID:** ${latestReviewId}\n\n`;
+
+            if (summaryContext) {
+              prompt += `**Codex summary (context, not an issue to fix directly):**\n`;
+              summaryContext.split('\n').forEach(line => {
+                prompt += `> ${line}\n`;
+              });
+              prompt += `\n`;
+            }
+
             prompt += `Please fix the following ${issues.length} issue(s):\n\n`;
 
             issues.forEach((issue, i) => {
@@ -167,6 +191,8 @@ jobs:
             core.setOutput('count', issues.length);
             core.setOutput('prompt', prompt);
             core.setOutput('branch', pr.data.head.ref);
+            core.setOutput('review_id', String(latestReviewId));
+            core.setOutput('review_submitted_at', latestCodexReview.submitted_at);
 
       - name: Check for existing notification
         if: steps.issues.outputs.has_issues == 'true'
@@ -210,15 +236,24 @@ jobs:
           script: |
             const prNumber = ${{ steps.pr.outputs.number }};
             const issueCount = ${{ steps.issues.outputs.count }};
+            const reviewId = "${{ steps.issues.outputs.review_id }}";
+            const submittedAt = "${{ steps.issues.outputs.review_submitted_at }}";
             const prompt = process.env.PROMPT_CONTENT || "";
 
             const marker = "<!-- claude-review-notification -->";
+            // Anchor: lets watchers (and the skill) verify which Codex review
+            // this notification describes. If the anchor's review id doesn't
+            // match the latest Codex review, the notification is stale and
+            // should be ignored.
+            const anchor = "<!-- codex-review-id: " + reviewId + " -->";
 
             const lines = [
               marker,
+              anchor,
               "## Review Issues Detected",
               "",
-              "Found **" + issueCount + "** issue(s) from Codex review.",
+              "Found **" + issueCount + "** issue(s) from Codex review `" + reviewId + "`" +
+                (submittedAt ? " (submitted " + submittedAt + ")." : "."),
               "",
               "### Quick Fix",
               "",
