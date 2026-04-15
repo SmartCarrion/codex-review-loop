@@ -82,6 +82,44 @@ for the fresh issue list.
 EOF
 )
 
+# Note on endpoint paths: we pass `repos/...` (no leading slash) to
+# `gh api` because MSYS/Git Bash on Windows rewrites paths starting
+# with "/" into Windows filesystem paths before the child process
+# sees them. `gh api` accepts both forms, so this is portable.
+
+# Follow GitHub's Link: rel="next" header to page through results when
+# using token auth. Without this, busy PRs (100+ comments) can have the
+# notification sticky beyond page 1, so it never gets neutralized.
+curl_paginate() {
+    local url="$1"
+    local sep="?"
+    [[ "$url" == *"?"* ]] && sep="&"
+    url="${url}${sep}per_page=100"
+
+    local all="[]"
+    local headers_file
+    headers_file=$(mktemp)
+
+    while [[ -n "$url" ]]; do
+        local body
+        body=$(curl -s -D "$headers_file" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$url") || { rm -f "$headers_file"; return 1; }
+
+        all=$(jq -n --argjson a "$all" --argjson b "$body" '$a + ($b // [])')
+
+        url=$(grep -i '^link:' "$headers_file" 2>/dev/null \
+              | tr ',' '\n' \
+              | grep 'rel="next"' \
+              | sed -E 's/.*<([^>]+)>.*/\1/' \
+              | head -1 || true)
+    done
+
+    rm -f "$headers_file"
+    echo "$all"
+}
+
 neutralize_sticky() {
     local comment_id
     local existing_json
@@ -89,12 +127,10 @@ neutralize_sticky() {
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         existing_json=$(gh api --paginate \
             -H "Accept: application/vnd.github.v3+json" \
-            "/repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null | jq -s 'add // []') || return 0
+            "repos/$REPO/issues/$PR_NUMBER/comments" 2>/dev/null | jq -s 'add // []') || return 0
     else
-        existing_json=$(curl -s \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments?per_page=100") || return 0
+        existing_json=$(curl_paginate \
+            "https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments") || return 0
     fi
 
     comment_id=$(echo "$existing_json" | jq -r --arg m "$NOTIFICATION_MARKER" '
@@ -107,7 +143,7 @@ neutralize_sticky() {
     patch_json=$(jq -n --arg body "$STALE_BODY" '{body: $body}')
 
     if [[ "$AUTH_METHOD" == "gh" ]]; then
-        gh api "/repos/$REPO/issues/comments/$comment_id" \
+        gh api "repos/$REPO/issues/comments/$comment_id" \
             --method PATCH --input - <<< "$patch_json" >/dev/null 2>&1 \
             && echo "Neutralized stale notification comment $comment_id"
     else
@@ -125,7 +161,7 @@ neutralize_sticky || true
 COMMENT_BODY='{"body": "@codex review\n\n*Re-review requested after fixes*"}'
 
 if [[ "$AUTH_METHOD" == "gh" ]]; then
-    RESPONSE=$(gh api "/repos/$REPO/issues/$PR_NUMBER/comments" \
+    RESPONSE=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
         --method POST \
         --input - <<< "$COMMENT_BODY" 2>&1) && HTTP_OK=true || HTTP_OK=false
 

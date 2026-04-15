@@ -68,14 +68,21 @@ if [[ "$REPO_DETECTED" == true ]]; then
     echo "Detected repo: $REPO"
 fi
 
-# Unified API caller — works with either GITHUB_TOKEN or gh CLI
+# Unified API caller — works with either GITHUB_TOKEN or gh CLI.
 # Fails fast on gh errors; curl -s always exits 0 on HTTP errors so the
 # downstream jq parsing handles error JSON (e.g. STATE becomes "null").
+#
+# The leading "/" is stripped before passing to `gh api` because MSYS/
+# Git Bash on Windows rewrites paths starting with "/" into Windows
+# filesystem paths (e.g. "/repos/..." → "C:/Program Files/Git/repos/...")
+# before `gh` sees them. `gh api` accepts the endpoint with or without
+# the leading slash, so normalizing here makes the scripts portable.
 gh_api() {
+    local endpoint="${1#/}"
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         local output
-        if ! output=$(gh api -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
-            echo "Error: GitHub API request failed for $1" >&2
+        if ! output=$(gh api -H "Accept: application/vnd.github.v3+json" "$endpoint" 2>&1); then
+            echo "Error: GitHub API request failed for /$endpoint" >&2
             echo "$output" >&2
             exit 1
         fi
@@ -83,26 +90,59 @@ gh_api() {
     else
         curl -s -H "Authorization: token $GITHUB_TOKEN" \
              -H "Accept: application/vnd.github.v3+json" \
-             "https://api.github.com$1"
+             "https://api.github.com/$endpoint"
     fi
 }
 
+# Follow GitHub's Link: rel="next" header to page through results when
+# using token auth. gh handles this natively via --paginate, but curl
+# needs it done manually — otherwise busy PRs (100+ reviews/comments)
+# can have the latest data beyond page 1 and we'd miss it.
+curl_paginate() {
+    local url="$1"
+    local sep="?"
+    [[ "$url" == *"?"* ]] && sep="&"
+    url="${url}${sep}per_page=100"
+
+    local all="[]"
+    local headers_file
+    headers_file=$(mktemp)
+
+    while [[ -n "$url" ]]; do
+        local body
+        body=$(curl -s -D "$headers_file" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$url") || { rm -f "$headers_file"; return 1; }
+
+        all=$(jq -n --argjson a "$all" --argjson b "$body" '$a + ($b // [])')
+
+        # Parse `Link: <...>; rel="next", <...>; rel="last"` and extract
+        # the URL whose rel is "next". Empty when there is no next page.
+        url=$(grep -i '^link:' "$headers_file" 2>/dev/null \
+              | tr ',' '\n' \
+              | grep 'rel="next"' \
+              | sed -E 's/.*<([^>]+)>.*/\1/' \
+              | head -1 || true)
+    done
+
+    rm -f "$headers_file"
+    echo "$all"
+}
+
 # Paginated variant for list endpoints (reviews, comments).
-# gh --paginate may emit one JSON array per page; jq -s 'add' merges them.
-# curl path uses per_page=100 (single request, covers most PRs).
 gh_api_list() {
+    local endpoint="${1#/}"
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         local output
-        if ! output=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" "$1" 2>&1); then
-            echo "Error: GitHub API request failed for $1" >&2
+        if ! output=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" "$endpoint" 2>&1); then
+            echo "Error: GitHub API request failed for /$endpoint" >&2
             echo "$output" >&2
             exit 1
         fi
         echo "$output" | jq -s 'add // []'
     else
-        curl -s -H "Authorization: token $GITHUB_TOKEN" \
-             -H "Accept: application/vnd.github.v3+json" \
-             "https://api.github.com${1}?per_page=100"
+        curl_paginate "https://api.github.com/${endpoint}"
     fi
 }
 

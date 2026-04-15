@@ -67,14 +67,51 @@ if [[ "$REPO_DETECTED" == true ]]; then
     echo "Detected repo: $REPO"
 fi
 
+# Follow GitHub's Link: rel="next" header to page through results when
+# using token auth. gh CLI handles this natively via --paginate, but the
+# curl path must do it manually — otherwise busy PRs (100+ reviews) can
+# have the latest Codex review beyond page 1 and we'd miss it.
+curl_paginate() {
+    local url="$1"
+    local sep="?"
+    [[ "$url" == *"?"* ]] && sep="&"
+    url="${url}${sep}per_page=100"
+
+    local all="[]"
+    local headers_file
+    headers_file=$(mktemp)
+
+    while [[ -n "$url" ]]; do
+        local body
+        body=$(curl -s -D "$headers_file" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "$url") || { rm -f "$headers_file"; return 1; }
+
+        all=$(jq -n --argjson a "$all" --argjson b "$body" '$a + ($b // [])')
+
+        # Parse `Link: <...>; rel="next", <...>; rel="last"` and extract
+        # the URL whose rel is "next". Empty when there is no next page.
+        url=$(grep -i '^link:' "$headers_file" 2>/dev/null \
+              | tr ',' '\n' \
+              | grep 'rel="next"' \
+              | sed -E 's/.*<([^>]+)>.*/\1/' \
+              | head -1 || true)
+    done
+
+    rm -f "$headers_file"
+    echo "$all"
+}
+
 fetch_reviews() {
+    # Paths passed to `gh api` have no leading slash to avoid MSYS/Git
+    # Bash rewriting them into Windows filesystem paths on Windows.
+    # `gh api` accepts either form; curl still needs it in the URL.
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         gh api --paginate -H "Accept: application/vnd.github.v3+json" \
-            "/repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null | jq -s 'add // []'
+            "repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null | jq -s 'add // []'
     else
-        curl -s -H "Authorization: token $GITHUB_TOKEN" \
-             -H "Accept: application/vnd.github.v3+json" \
-             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100"
+        curl_paginate "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews"
     fi
 }
 
