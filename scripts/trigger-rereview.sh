@@ -67,20 +67,25 @@ echo "Triggering re-review for PR #$PR_NUMBER..."
 # review completes. We rewrite it in place rather than deleting so the
 # comment history stays intact.
 NOTIFICATION_MARKER="<!-- claude-review-notification -->"
-STALE_BODY=$(cat <<EOF
-$NOTIFICATION_MARKER
-<!-- codex-review-id: pending -->
-## Fixes pushed — awaiting Codex re-review
 
-The previous review's issues have been addressed and pushed. Any
-issue list above this point is **stale** and should be ignored until
-a new Codex review completes.
-
-Run \`./scripts/wait-for-review.sh $PR_NUMBER\` to block until the
-next review arrives, then \`./scripts/fetch-review-issues.sh $PR_NUMBER\`
-for the fresh issue list.
-EOF
-)
+# Look up the current latest Codex review ID so the stale body can embed
+# it in the `wait-for-review.sh` suggestion. Without this, users would
+# get `./scripts/wait-for-review.sh <PR>` with no LAST_REVIEW_ID, which
+# exits immediately against any existing review (empty LAST_REVIEW_ID
+# never equals a real review id) and causes fetching stale issues.
+get_latest_codex_review_id() {
+    local reviews_json
+    if [[ "$AUTH_METHOD" == "gh" ]]; then
+        reviews_json=$(gh api --paginate -H "Accept: application/vnd.github.v3+json" \
+            "repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null | jq -s 'add // []') || echo "[]"
+    else
+        reviews_json=$(curl_paginate "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" 2>/dev/null) || echo "[]"
+    fi
+    echo "${reviews_json:-[]}" | jq -r '
+        [.[] | select(.user.login | test("codex-connector|chatgpt-codex"; "i"))] |
+        sort_by(.submitted_at) | .[-1].id // empty
+    '
+}
 
 # Note on endpoint paths: we pass `repos/...` (no leading slash) to
 # `gh api` because MSYS/Git Bash on Windows rewrites paths starting
@@ -139,8 +144,35 @@ neutralize_sticky() {
 
     [[ -z "$comment_id" ]] && return 0
 
+    # Build the stale body with the current Codex review ID embedded in
+    # the wait-for-review.sh suggestion. wait-for-review.sh treats an
+    # empty LAST_REVIEW_ID as "exit on any review", so without this the
+    # suggested command would return immediately instead of waiting.
+    local prior_review_id
+    prior_review_id=$(get_latest_codex_review_id)
+
+    local wait_cmd="./scripts/wait-for-review.sh $PR_NUMBER"
+    if [[ -n "$prior_review_id" ]]; then
+        wait_cmd="./scripts/wait-for-review.sh $PR_NUMBER $prior_review_id"
+    fi
+
+    local stale_body
+    stale_body=$(cat <<EOF
+$NOTIFICATION_MARKER
+<!-- codex-review-id: pending -->
+## Fixes pushed — awaiting Codex re-review
+
+The previous review's issues have been addressed and pushed. Any
+issue list above this point is **stale** and should be ignored until
+a new Codex review completes.
+
+Run \`$wait_cmd\` to block until the next review arrives, then
+\`./scripts/fetch-review-issues.sh $PR_NUMBER\` for the fresh issue list.
+EOF
+)
+
     local patch_json
-    patch_json=$(jq -n --arg body "$STALE_BODY" '{body: $body}')
+    patch_json=$(jq -n --arg body "$stale_body" '{body: $body}')
 
     if [[ "$AUTH_METHOD" == "gh" ]]; then
         gh api "repos/$REPO/issues/comments/$comment_id" \
